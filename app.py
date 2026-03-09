@@ -4,66 +4,83 @@ from openpyxl import load_workbook
 import io
 import zipfile
 
-st.title("Gerador de Avaliações Dinâmicas")
+st.set_page_config(page_title="Gerador de Avaliações Práticas", layout="wide")
+st.title("Sincronização de Avaliações (Importação -> Modelo)")
 
-# --- CONFIGURAÇÃO MANUAL (Ajuste aqui as coordenadas) ---
-CELULA_NOME_MODELO = 'B5'       # Onde entra o nome do formando no modelo
-LINHA_INICIO_PARAMETROS = 15     # Linha onde começam os parâmetros no modelo
-COLUNA_PARAMETROS_MODELO = 'B'  # Coluna onde estão os nomes dos parâmetros no modelo
-COLUNA_VALORES_MODELO = 'C'     # Coluna onde as notas serão inseridas no modelo
+# --- CONFIGURAÇÃO DO MODELO (Ajuste aqui) ---
+# Onde o nome deve ser escrito no seu ficheiro .xlsm final
+CELULA_DESTINO_NOME = 'B5' 
+# Onde começam as notas dos parâmetros no seu modelo
+LINHA_INICIO_NOTAS_MODELO = 15
+COLUNA_NOTAS_MODELO = 'C'
 
-# 1. Upload
-file_importacao = st.file_uploader("1. Ficheiro 'Importação' (Dados na Coluna K)", type=["xlsx"])
-file_modelo = st.file_uploader("2. Ficheiro 'Modelo' (Com Macros)", type=["xlsm"])
+# 1. Upload de Ficheiros
+col1, col2 = st.columns(2)
+with col1:
+    file_import = st.file_uploader("1. Ficheiro 'Importação' (.xlsx)", type=["xlsx"])
+with col2:
+    file_modelo = st.file_uploader("2. Ficheiro 'Modelo' (.xlsm)", type=["xlsm"])
 
-if file_importacao and file_modelo:
+if file_import and file_modelo:
     try:
-        # --- PASSO 1: LER PARÂMETROS DO MODELO ---
-        wb_check = load_workbook(file_modelo, data_only=True)
-        ws_check = wb_check.active
+        # --- PASSO 1: LER DADOS DE IMPORTAÇÃO ---
+        # Lemos a partir da linha 13 (index 12)
+        df_import = pd.read_excel(file_import, skiprows=12)
         
-        parametros = []
-        # Lê 10 parâmetros (ajuste o range se forem mais)
-        for row in range(LINHA_INICIO_PARAMETROS, LINHA_INICIO_PARAMETROS + 10):
-            val = ws_check[f"{COLUNA_PARAMETROS_MODELO}{row}"].value
-            if val:
-                parametros.append(val)
-        
-        st.write(f"**Parâmetros detetados no modelo:** {', '.join(parametros)}")
+        if 'nomefrmo' not in df_import.columns:
+            st.error("Erro: Não foi encontrada a coluna 'nomefrmo' no ficheiro de importação.")
+        else:
+            # Limpar linhas sem nome
+            df_import = df_import.dropna(subset=['nomefrmo'])
+            st.success(f"Detetados {len(df_import)} formandos.")
 
-        # --- PASSO 2: LER DADOS DA IMPORTAÇÃO ---
-        # Lemos a Coluna K (Nomes) e as seguintes (Valores)
-        num_colunas_necessarias = len(parametros) + 1
-        df_dados = pd.read_excel(file_importacao, skiprows=12, usecols=range(10, 10 + num_colunas_necessarias), header=None)
-        
-        if st.button(f"Gerar {len(df_dados)} Avaliações Completas"):
-            zip_buffer = io.BytesIO()
+            # --- PASSO 2: IDENTIFICAR PARÂMETROS ---
+            # Vamos assumir que as colunas após 'nomefrmo' são os parâmetros
+            idx_nome = df_import.columns.get_loc('nomefrmo')
+            colunas_parametros = df_import.columns[idx_nome + 1:] # Colunas à direita de nomefrmo
             
-            with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-                for _, linha in df_dados.iterrows():
-                    nome_formando = str(linha[10]) # Coluna K
-                    if nome_formando == 'nan': continue
+            st.write("**Colunas de avaliação detetadas:**", list(colunas_parametros))
+
+            if st.button("Gerar Ficheiros XLSM"):
+                zip_buffer = io.BytesIO()
+                
+                with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                    bar = st.progress(0)
                     
-                    # Carregar modelo com macros
-                    file_modelo.seek(0)
-                    wb = load_workbook(file_modelo, keep_vba=True)
-                    ws = wb.active
-                    
-                    # Preencher Nome
-                    ws[CELULA_NOME_MODELO] = nome_formando
-                    
-                    # Preencher Parâmetros (Coluna L, M, N... da importação para a Coluna C do modelo)
-                    for i, param in enumerate(parametros):
-                        valor_avaliacao = linha[12 + i] # Colunas L, M, N...
-                        ws[f"{COLUNA_VALORES_MODELO}{LINHA_INICIO_PARAMETROS + i}"] = valor_avaliacao
-                    
-                    # Salvar em memória
-                    temp_file = io.BytesIO()
-                    wb.save(temp_file)
-                    zip_file.writestr(f"Avaliacao_{nome_formando.replace(' ', '_')}.xlsm", temp_file.getvalue())
-            
-            st.success("✅ Todos os ficheiros foram gerados com as macros preservadas!")
-            st.download_button("📥 Descarregar ZIP", zip_buffer.getvalue(), "avaliacoes.zip")
+                    for idx, linha in df_import.iterrows():
+                        # Preparar o Modelo (Com Macros)
+                        file_modelo.seek(0)
+                        wb = load_workbook(file_modelo, keep_vba=True)
+                        ws = wb.active
+                        
+                        # Inserir Nome do Formando
+                        ws[CELULA_DESTINO_NOME] = linha['nomefrmo']
+                        
+                        # Inserir Notas dos Parâmetros
+                        for i, col_nome in enumerate(colunas_parametros):
+                            valor_nota = linha[col_nome]
+                            if pd.notna(valor_nota):
+                                # Escreve na coluna C, linhas 15, 16, 17...
+                                celula_alvo = f"{COLUNA_NOTAS_MODELO}{LINHA_INICIO_NOTAS_MODELO + i}"
+                                ws[celula_alvo] = valor_nota
+                        
+                        # Guardar em memória
+                        output = io.BytesIO()
+                        wb.save(output)
+                        
+                        # Nome do ficheiro individual
+                        fn = f"Avaliacao_{str(linha['nomefrmo']).replace(' ', '_')}.xlsm"
+                        zip_file.writestr(fn, output.getvalue())
+                        
+                        bar.progress((idx + 1) / len(df_import))
+                
+                st.success("✅ Processamento completo!")
+                st.download_button(
+                    label="📥 Baixar Pasta de Avaliações (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name="Avaliacoes_Praticas.zip",
+                    mime="application/zip"
+                )
 
     except Exception as e:
-        st.error(f"Erro na leitura: {e}")
+        st.error(f"Ocorreu um erro técnico: {e}")
