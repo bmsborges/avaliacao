@@ -54,7 +54,7 @@ if file_importacao and file_modelo:
                     
                     # Preencher Parâmetros (Coluna L, M, N... da importação para a Coluna C do modelo)
                     for i, param in enumerate(parametros):
-                        valor_avaliacao = linha[11 + i] # Colunas L, M, N...
+                        valor_avaliacao = linha[12 + i] # Colunas L, M, N...
                         ws[f"{COLUNA_VALORES_MODELO}{LINHA_INICIO_PARAMETROS + i}"] = valor_avaliacao
                     
                     # Salvar em memória
